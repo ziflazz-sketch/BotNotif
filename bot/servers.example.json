@@ -1,0 +1,14 @@
+[
+  {
+    "name": "ID BIZNET 1",
+    "host": "1.2.3.4",
+    "agentPort": 5890,
+    "token": "TOKEN_AGENT_SERVER_1"
+  },
+  {
+    "name": "SG DO 1",
+    "host": "example.com",
+    "agentPort": 5890,
+    "token": "TOKEN_AGENT_SERVER_2"
+  }
+]
