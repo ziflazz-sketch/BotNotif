@@ -219,6 +219,7 @@ bash install-agent.sh
 
 ```text
 /id
+/setthread
 ```
 
 6. Salin `CHAT_ID` yang dikirim bot.
@@ -231,7 +232,7 @@ zivpn-monitor-panel
 8. Pilih menu:
 
 ```text
-9) Setting Bot Telegram
+9) Setting Bot Telegram / THREAD_ID
 ```
 
 Masukkan:
@@ -279,7 +280,7 @@ Token agent
 6) Edit Server
 7) Hapus Server
 8) List Server
-9) Setting Bot Telegram
+9) Setting Bot Telegram / THREAD_ID
 10) Test Semua Server
 11) Lihat Log Bot
 12) Edit servers.json manual
@@ -299,6 +300,7 @@ Token agent
 /server NAMA_SERVER
 /reload
 /id
+/setthread
 /help
 ```
 
@@ -382,3 +384,50 @@ curl -H "Authorization: Bearer TOKEN_AGENT" http://IP_SERVER:5890/health
 ```
 
 Jika tidak bisa connect, cek firewall provider VPS dan pastikan port `5890/tcp` dibuka.
+
+## Cara Kirim Status ke Topik Cek Server
+
+Kalau grup Telegram memakai forum/topik seperti `TRX Bot` dan `Cek Server`, bot harus memakai `MESSAGE_THREAD_ID`. Jangan langsung memakai angka dari link `https://t.me/nama_grup/3302`, karena angka itu sering hanya `message_id`, bukan `thread_id` tujuan.
+
+Cara paling aman:
+
+```text
+1. Buka topik Cek Server di grup Telegram
+2. Kirim /id
+/setthread di topik Cek Server
+3. Lihat bagian THREAD_ID_TOPIK_INI
+4. Kirim /setthread di topik Cek Server
+5. Restart bot jika diperlukan: zivpn-monitor-restart
+```
+
+Setelah `/setthread`, bot otomatis menyimpan nilai ini ke `.env`:
+
+```env
+MESSAGE_THREAD_ID=isi_thread_id_cek_server
+```
+
+Cek manual:
+
+```bash
+grep MESSAGE_THREAD_ID /root/zivpn-monitor-bot/.env
+```
+
+Restart bot:
+
+```bash
+zivpn-monitor-restart
+```
+
+Command Telegram versi topic support:
+
+```text
+/menu
+/status
+/down
+/list
+/server NAMA_SERVER
+/reload
+/id
+/setthread
+/help
+```
