@@ -19,7 +19,7 @@ function loadEnv(file) {
       const idx = trimmed.indexOf('=');
       if (idx === -1) return;
       const key = trimmed.slice(0, idx).trim();
-      const value = trimmed.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
+      const value = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
       process.env[key] = value;
     });
   } catch (err) {
@@ -42,10 +42,34 @@ let statusCache = new Map();
 let lastUpdateId = 0;
 let monitoringTimer = null;
 
-function maskToken(token) {
-  if (!token) return '-';
-  if (token.length <= 8) return '********';
-  return token.slice(0, 4) + '...' + token.slice(-4);
+function configuredThreadId() {
+  const raw = String(process.env.MESSAGE_THREAD_ID || process.env.THREAD_ID || '').trim();
+  if (!raw || raw === '-' || raw === '0') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function setEnvValue(key, value) {
+  try {
+    let raw = '';
+    try { raw = fs.readFileSync(ENV_PATH, 'utf8'); } catch (_) {}
+    const lines = raw.split(/\r?\n/).filter((line) => line.length > 0);
+    let found = false;
+    const updated = lines.map((line) => {
+      if (line.startsWith(`${key}=`)) {
+        found = true;
+        return `${key}=${value}`;
+      }
+      return line;
+    });
+    if (!found) updated.push(`${key}=${value}`);
+    fs.writeFileSync(ENV_PATH, updated.join('\n') + '\n');
+    process.env[key] = String(value);
+    return true;
+  } catch (err) {
+    console.error('Gagal update .env:', err.message);
+    return false;
+  }
 }
 
 function escapeHtml(str) {
@@ -81,9 +105,7 @@ function loadState() {
   try {
     const raw = fs.readFileSync(STATE_PATH, 'utf8');
     const obj = JSON.parse(raw);
-    Object.entries(obj).forEach(([name, value]) => {
-      statusCache.set(name, value);
-    });
+    Object.entries(obj).forEach(([name, value]) => statusCache.set(name, value));
   } catch (_) {}
 }
 
@@ -117,22 +139,19 @@ function requestJson(url, options = {}) {
       res.on('end', () => {
         try {
           const data = body ? JSON.parse(body) : {};
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(data);
-          } else {
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
+          else {
             const err = new Error(data.description || data.error || `HTTP ${res.statusCode}`);
             err.statusCode = res.statusCode;
             err.data = data;
             reject(err);
           }
-        } catch (err) {
+        } catch (_) {
           reject(new Error('Invalid JSON response'));
         }
       });
     });
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'));
-    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
     if (options.body) req.write(options.body);
     req.end();
@@ -156,14 +175,22 @@ async function telegram(method, payload) {
   });
 }
 
-async function sendMessage(chatId, text, extra = {}) {
-  return telegram('sendMessage', {
-    chat_id: chatId || CHAT_ID,
+async function sendMessage(chatId, text, extra = {}, threadId = null) {
+  const targetChatId = chatId || CHAT_ID;
+  const payload = {
+    chat_id: targetChatId,
     text,
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     ...extra
-  }).catch((err) => console.error('Send message error:', err.message));
+  };
+
+  const finalThreadId = threadId || payload.message_thread_id || configuredThreadId();
+  if (finalThreadId && String(targetChatId) === String(CHAT_ID)) {
+    payload.message_thread_id = Number(finalThreadId);
+  }
+
+  return telegram('sendMessage', payload).catch((err) => console.error('Send message error:', err.message));
 }
 
 async function answerCallbackQuery(callbackQueryId, text) {
@@ -173,7 +200,7 @@ async function answerCallbackQuery(callbackQueryId, text) {
   }).catch(() => null);
 }
 
-async function editMessageText(chatId, messageId, text, extra = {}) {
+async function editMessageText(chatId, messageId, text, extra = {}, threadId = null) {
   return telegram('editMessageText', {
     chat_id: chatId,
     message_id: messageId,
@@ -181,7 +208,7 @@ async function editMessageText(chatId, messageId, text, extra = {}) {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     ...extra
-  }).catch(() => sendMessage(chatId, text, extra));
+  }).catch(() => sendMessage(chatId, text, extra, threadId));
 }
 
 function isAllowedChat(chatId) {
@@ -199,7 +226,7 @@ async function checkServer(server) {
     const data = await requestJson(agentUrl(server), {
       timeout: 8000,
       headers: {
-        'Authorization': `Bearer ${server.token}`,
+        Authorization: `Bearer ${server.token}`,
         'X-Agent-Token': server.token
       }
     });
@@ -247,9 +274,7 @@ function formatMetricLine(m) {
 
 function formatServerStatus(result) {
   const icon = result.online ? '🟢' : '🔴';
-  if (!result.online) {
-    return `${icon} <b>${escapeHtml(result.name)}</b>\nStatus: <b>OFFLINE</b>\nLatency: ${result.latencyMs}ms`;
-  }
+  if (!result.online) return `${icon} <b>${escapeHtml(result.name)}</b>\nStatus: <b>OFFLINE</b>\nLatency: ${result.latencyMs}ms`;
   return `${icon} <b>${escapeHtml(result.name)}</b>\nStatus: <b>ONLINE</b>\nLatency: ${result.latencyMs}ms\n${formatMetricLine(result.metrics)}`;
 }
 
@@ -270,10 +295,7 @@ function chunkText(text, limit = 3800) {
 
 async function checkAllServers() {
   const results = [];
-  for (const server of servers) {
-    const result = await checkServer(server);
-    results.push(result);
-  }
+  for (const server of servers) results.push(await checkServer(server));
   return results;
 }
 
@@ -312,7 +334,6 @@ async function monitorLoop() {
     const previous = statusCache.get(result.name);
     const alertKey = getAlertKey(result);
     const firstCheck = !previous;
-
     const shouldAlertFirst = firstCheck && ALERT_ON_FIRST_CHECK && alertKey !== 'OK';
     const statusChanged = previous && previous.online !== result.online;
     const alertChanged = previous && previous.alertKey !== alertKey;
@@ -323,7 +344,6 @@ async function monitorLoop() {
       else if (previous && previous.online === false) title = '✅ <b>SERVER NORMAL KEMBALI</b>';
       else if (alertKey !== 'OK') title = '⚠️ <b>RESOURCE TINGGI</b>';
       else if (previous && previous.alertKey && previous.alertKey !== 'OK') title = '✅ <b>RESOURCE NORMAL KEMBALI</b>';
-
       await sendMessage(CHAT_ID, `${title}\n\n${formatServerStatus(result)}`);
     }
 
@@ -347,68 +367,82 @@ function mainKeyboard() {
         { text: '📋 List Server', callback_data: 'list' },
         { text: '🔄 Reload Config', callback_data: 'reload' }
       ],
-      [
-        { text: 'ℹ️ Bantuan', callback_data: 'help' }
-      ]
+      [{ text: 'ℹ️ Bantuan', callback_data: 'help' }]
     ]
   };
 }
 
-async function handleCommand(chatId, text, messageId) {
+async function handleCommand(chatId, text, messageId, messageThreadId = null) {
   const parts = String(text || '').trim().split(/\s+/);
   const cmd = (parts[0] || '').split('@')[0].toLowerCase();
   const args = parts.slice(1).join(' ');
+  const replyThreadId = messageThreadId || configuredThreadId();
 
   if (cmd === '/id') {
-    return sendMessage(chatId, `Chat ID:\n<code>${chatId}</code>`);
+    return sendMessage(chatId, [
+      '📌 <b>ID Telegram</b>',
+      '',
+      `CHAT_ID: <code>${chatId}</code>`,
+      `THREAD_ID_TOPIK_INI: <code>${messageThreadId || '-'}</code>`,
+      `THREAD_ID_ENV: <code>${configuredThreadId() || '-'}</code>`,
+      '',
+      'Kirim <code>/setthread</code> di topik Cek Server untuk mengunci semua notif otomatis ke topik ini.'
+    ].join('\n'), {}, messageThreadId);
+  }
+
+  if (cmd === '/setthread') {
+    if (!messageThreadId) {
+      return sendMessage(chatId, '❌ THREAD_ID tidak terdeteksi. Pastikan grup memakai forum/topik dan kirim command ini di dalam topik Cek Server.', {}, messageThreadId);
+    }
+    const ok = setEnvValue('MESSAGE_THREAD_ID', messageThreadId);
+    return sendMessage(chatId, ok
+      ? `✅ THREAD_ID berhasil disimpan: <code>${messageThreadId}</code>\n\nMulai sekarang notif otomatis dikirim ke topik ini.`
+      : '❌ Gagal menyimpan THREAD_ID ke .env.', {}, messageThreadId);
   }
 
   if (!isAllowedChat(chatId)) {
-    return sendMessage(chatId, 'Akses ditolak. Bot ini hanya untuk grup yang sudah diatur.');
+    return sendMessage(chatId, 'Akses ditolak. Bot ini hanya untuk grup yang sudah diatur.', {}, replyThreadId);
   }
 
   if (cmd === '/start' || cmd === '/menu') {
-    return sendMessage(chatId, '📡 <b>Panel Monitor ZiVPN</b>\nPilih menu di bawah ini:', { reply_markup: mainKeyboard() });
+    return sendMessage(chatId, '📡 <b>Panel Monitor ZiVPN</b>\nPilih menu di bawah ini:', { reply_markup: mainKeyboard() }, replyThreadId);
   }
 
   if (cmd === '/status') {
-    const msg = await sendMessage(chatId, '⏳ Mengecek semua server...');
+    const msg = await sendMessage(chatId, '⏳ Mengecek semua server...', {}, replyThreadId);
     const results = await checkAllServers();
     const chunks = chunkText(formatSummary(results));
     if (msg && msg.result && chunks[0]) {
-      await editMessageText(chatId, msg.result.message_id, chunks[0]);
-      for (const extra of chunks.slice(1)) await sendMessage(chatId, extra);
+      await editMessageText(chatId, msg.result.message_id, chunks[0], {}, replyThreadId);
+      for (const extra of chunks.slice(1)) await sendMessage(chatId, extra, {}, replyThreadId);
     } else {
-      for (const chunk of chunks) await sendMessage(chatId, chunk);
+      for (const chunk of chunks) await sendMessage(chatId, chunk, {}, replyThreadId);
     }
     return;
   }
 
   if (cmd === '/down') {
     const results = await checkAllServers();
-    return sendMessage(chatId, formatDown(results));
+    return sendMessage(chatId, formatDown(results), {}, replyThreadId);
   }
 
   if (cmd === '/list') {
-    const body = servers.length
-      ? servers.map((s, i) => `${i + 1}. <b>${escapeHtml(s.name)}</b>`).join('\n')
-      : 'Belum ada server.';
-    return sendMessage(chatId, `📋 <b>Daftar Server</b>\n\n${body}`);
+    const body = servers.length ? servers.map((s, i) => `${i + 1}. <b>${escapeHtml(s.name)}</b>`).join('\n') : 'Belum ada server.';
+    return sendMessage(chatId, `📋 <b>Daftar Server</b>\n\n${body}`, {}, replyThreadId);
   }
 
   if (cmd === '/server') {
-    if (!args) return sendMessage(chatId, 'Format:\n<code>/server NAMA_SERVER</code>');
-    const server = servers.find((s) => s.name.toLowerCase() === args.toLowerCase()) ||
-      servers.find((s) => s.name.toLowerCase().includes(args.toLowerCase()));
-    if (!server) return sendMessage(chatId, 'Server tidak ditemukan. Cek /list');
+    if (!args) return sendMessage(chatId, 'Format:\n<code>/server NAMA_SERVER</code>', {}, replyThreadId);
+    const server = servers.find((s) => s.name.toLowerCase() === args.toLowerCase()) || servers.find((s) => s.name.toLowerCase().includes(args.toLowerCase()));
+    if (!server) return sendMessage(chatId, 'Server tidak ditemukan. Cek /list', {}, replyThreadId);
     const result = await checkServer(server);
-    return sendMessage(chatId, formatServerStatus(result));
+    return sendMessage(chatId, formatServerStatus(result), {}, replyThreadId);
   }
 
   if (cmd === '/reload') {
     loadEnv(ENV_PATH);
     loadServers();
-    return sendMessage(chatId, `✅ Config server berhasil direload. Total server: <b>${servers.length}</b>`);
+    return sendMessage(chatId, `✅ Config server berhasil direload. Total server: <b>${servers.length}</b>`, {}, replyThreadId);
   }
 
   if (cmd === '/help') {
@@ -421,47 +455,47 @@ async function handleCommand(chatId, text, messageId) {
       '<code>/list</code> - daftar nama server',
       '<code>/server NAMA</code> - detail 1 server',
       '<code>/reload</code> - reload servers.json',
-      '<code>/id</code> - ambil chat ID grup',
+      '<code>/id</code> - ambil chat ID dan THREAD_ID',
+      '<code>/setthread</code> - set topik tujuan notif otomatis',
       '',
       'Data sensitif seperti IP/domain, port, service, dan jumlah akun tidak ditampilkan di Telegram.'
-    ].join('\n'));
+    ].join('\n'), {}, replyThreadId);
   }
 }
 
 async function handleCallback(callback) {
   const chatId = callback.message.chat.id;
   const messageId = callback.message.message_id;
+  const threadId = callback.message.message_thread_id || configuredThreadId();
   const data = callback.data;
   await answerCallbackQuery(callback.id, 'Diproses...');
-
   if (!isAllowedChat(chatId)) return;
 
   if (data === 'status') {
     const results = await checkAllServers();
-    return editMessageText(chatId, messageId, formatSummary(results), { reply_markup: mainKeyboard() });
+    return editMessageText(chatId, messageId, formatSummary(results), { reply_markup: mainKeyboard() }, threadId);
   }
   if (data === 'down') {
     const results = await checkAllServers();
-    return editMessageText(chatId, messageId, formatDown(results), { reply_markup: mainKeyboard() });
+    return editMessageText(chatId, messageId, formatDown(results), { reply_markup: mainKeyboard() }, threadId);
   }
   if (data === 'list') {
-    const body = servers.length
-      ? servers.map((s, i) => `${i + 1}. <b>${escapeHtml(s.name)}</b>`).join('\n')
-      : 'Belum ada server.';
-    return editMessageText(chatId, messageId, `📋 <b>Daftar Server</b>\n\n${body}`, { reply_markup: mainKeyboard() });
+    const body = servers.length ? servers.map((s, i) => `${i + 1}. <b>${escapeHtml(s.name)}</b>`).join('\n') : 'Belum ada server.';
+    return editMessageText(chatId, messageId, `📋 <b>Daftar Server</b>\n\n${body}`, { reply_markup: mainKeyboard() }, threadId);
   }
   if (data === 'reload') {
     loadServers();
-    return editMessageText(chatId, messageId, `✅ Config server direload. Total server: <b>${servers.length}</b>`, { reply_markup: mainKeyboard() });
+    return editMessageText(chatId, messageId, `✅ Config server direload. Total server: <b>${servers.length}</b>`, { reply_markup: mainKeyboard() }, threadId);
   }
   if (data === 'help') {
     return editMessageText(chatId, messageId, [
       '📖 <b>Bantuan ZiVPN Monitor</b>',
       '',
       'Gunakan /status, /down, /list, /server NAMA_SERVER, /reload.',
+      'Gunakan /setthread di topik Cek Server agar notif otomatis masuk ke topik itu.',
       '',
       'Data sensitif tidak ditampilkan di grup.'
-    ].join('\n'), { reply_markup: mainKeyboard() });
+    ].join('\n'), { reply_markup: mainKeyboard() }, threadId);
   }
 }
 
@@ -473,12 +507,11 @@ async function pollTelegram() {
       timeout: 25,
       allowed_updates: ['message', 'callback_query']
     });
-
     const updates = data && data.result ? data.result : [];
     for (const update of updates) {
       lastUpdateId = Math.max(lastUpdateId, update.update_id);
       if (update.message && update.message.text) {
-        await handleCommand(update.message.chat.id, update.message.text, update.message.message_id);
+        await handleCommand(update.message.chat.id, update.message.text, update.message.message_id, update.message.message_thread_id || null);
       } else if (update.callback_query) {
         await handleCallback(update.callback_query);
       }
@@ -493,9 +526,7 @@ async function pollTelegram() {
 function startMonitor() {
   if (monitoringTimer) clearInterval(monitoringTimer);
   monitorLoop().catch((err) => console.error('Monitor loop error:', err.message));
-  monitoringTimer = setInterval(() => {
-    monitorLoop().catch((err) => console.error('Monitor loop error:', err.message));
-  }, CHECK_INTERVAL);
+  monitoringTimer = setInterval(() => monitorLoop().catch((err) => console.error('Monitor loop error:', err.message)), CHECK_INTERVAL);
 }
 
 process.on('SIGINT', () => process.exit(0));
@@ -507,9 +538,10 @@ loadState();
 console.log('ZiVPN Multi Server Monitor Bot Safe started.');
 console.log(`Check interval: ${CHECK_INTERVAL} ms`);
 console.log(`Servers: ${servers.length}`);
+console.log(`Message thread ID: ${configuredThreadId() || '-'}`);
 
 if (CHAT_ID && !CHAT_ID.includes('ISI_CHAT')) {
-  sendMessage(CHAT_ID, `✅ <b>ZiVPN Monitor Bot aktif</b>\nTotal server: <b>${servers.length}</b>\nMode: <b>Safe</b>`).catch(() => null);
+  sendMessage(CHAT_ID, `✅ <b>ZiVPN Monitor Bot aktif</b>\nTotal server: <b>${servers.length}</b>\nMode: <b>Safe</b>\nThread: <b>${configuredThreadId() || '-'}</b>`).catch(() => null);
 }
 
 startMonitor();

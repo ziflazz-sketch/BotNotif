@@ -180,13 +180,14 @@ NODE
 
 setting_bot() {
   header
-  echo "Setting Bot Telegram"
+  echo "Setting Bot Telegram / THREAD_ID"
   echo "-----------------------------------------------"
   echo "Kosongkan input kalau mau tetap pakai nilai lama."
   echo
-  local old_token old_chat old_interval old_cpu old_ram old_disk
+  local old_token old_chat old_thread old_interval old_cpu old_ram old_disk
   old_token=$(get_env_value BOT_TOKEN)
   old_chat=$(get_env_value CHAT_ID)
+  old_thread=$(get_env_value MESSAGE_THREAD_ID)
   old_interval=$(get_env_value CHECK_INTERVAL)
   old_cpu=$(get_env_value CPU_THRESHOLD)
   old_ram=$(get_env_value RAM_THRESHOLD)
@@ -194,6 +195,7 @@ setting_bot() {
 
   read -rp "BOT_TOKEN [${old_token:0:8}...] : " token
   read -rp "CHAT_ID [$old_chat]             : " chat
+  read -rp "THREAD_ID Cek Server [$old_thread] : " thread
   read -rp "Interval ms [$old_interval]     : " interval
   read -rp "CPU alert % [$old_cpu]          : " cpu
   read -rp "RAM alert % [$old_ram]          : " ram
@@ -201,6 +203,7 @@ setting_bot() {
 
   [ -n "$token" ] && set_env_value BOT_TOKEN "$token"
   [ -n "$chat" ] && set_env_value CHAT_ID "$chat"
+  [ -n "$thread" ] && set_env_value MESSAGE_THREAD_ID "$thread"
   [ -n "$interval" ] && set_env_value CHECK_INTERVAL "$interval"
   [ -n "$cpu" ] && set_env_value CPU_THRESHOLD "$cpu"
   [ -n "$ram" ] && set_env_value RAM_THRESHOLD "$ram"
@@ -304,7 +307,7 @@ while true; do
   echo "6) Edit Server"
   echo "7) Hapus Server"
   echo "8) List Server"
-  echo "9) Setting Bot Telegram"
+  echo "9) Setting Bot Telegram / THREAD_ID"
   echo "10) Test Semua Server"
   echo "11) Lihat Log Bot"
   echo "12) Edit servers.json manual"
